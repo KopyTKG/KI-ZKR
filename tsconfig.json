@@ -1,0 +1,22 @@
+{
+ "compilerOptions": {
+  "target": "es5",
+  "allowJs": true,
+  "skipLibCheck": true,
+  "strict": true,
+  "forceConsistentCasingInFileNames": true,
+  "noEmit": true,
+  "esModuleInterop": true,
+  "module": "CommonJS",
+  "resolveJsonModule": true,
+  "isolatedModules": true,
+  "incremental": true,
+  "baseUrl": ".", // This must be set if you're using "paths"
+  "paths": {
+   "@/*": ["src/*"]
+  },
+  "outDir": "build"
+ },
+ "include": ["**/*.ts"],
+ "exclude": ["node_modules"]
+}
