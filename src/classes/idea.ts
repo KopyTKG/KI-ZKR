@@ -39,11 +39,6 @@ class IDEA implements iCypher {
   }
   return binaryArray
  }
- private removeCommas(array: string): string[] {
-  const arr = array.split('')
-  return arr.map((subkey) => subkey.replace(/,/g, ''))
- }
-
  // Function to generate IDEA subkeys from base64 encoded 128-bit key
  private generateIDEASubkeys(base64Key: string): number[] {
   let binaryKey = this.base64ToBinaryArray(base64Key)
@@ -63,8 +58,113 @@ class IDEA implements iCypher {
 
   return subkeys
  }
- private algorithm(key: string, data: string) {
-  const segments = this.generateIDEASubkeys(key)
+
+ // Function to calculate modular inverse (handles potential non-invertible cases)
+ private modInverse(a: number, m: number): number | null {
+    if (a < 0 || a >= m || m <= 1) {
+      throw new Error('Invalid input for modular inverse');
+    }
+  
+    // Extended Euclidean Algorithm for modular inverse
+    let m0 = m;
+    let y = 0;
+    let x = 1;
+  
+    if (m === 1) {
+      return 0;
+    }
+  
+    while (a > 1) {
+      // q is the quotient
+      const q = Math.floor(a / m);
+      let t = m;
+  
+      m = a % m;
+      a = t;
+      t = y;
+      y = x - q * y;
+      x = t;
+    }
+  
+    if (x < 0) {
+      x += m0;
+    }
+  
+    return x;
+  }
+  
+  // Function to generate decryption subkeys from encryption subkeys
+  private generateDecryptionSubkeys(encryptionSubkeys: number[]): number[] {
+    const decryptionSubkeys: number[] = new Array(encryptionSubkeys.length);
+  
+    // Handle multiplicative keys (every other subkey)
+    for (let i = 0; i < 52; i += 6) {
+      const multiplicativeKey = encryptionSubkeys[i];
+      // Check if modular inverse exists (avoid division by zero)
+      if (multiplicativeKey === 0) {
+        throw new Error('Multiplicative key cannot be zero');
+      }
+      decryptionSubkeys[i] = this.modInverse(multiplicativeKey, 65536) || 0; // Handle non-invertible cases
+      decryptionSubkeys[i + 3] = this.modInverse(encryptionSubkeys[i + 3], 65536) || 0;
+    }
+  
+    // Handle additive keys (remaining subkeys)
+    for (let i = 1; i < 52; i += 6) {
+      decryptionSubkeys[i] = (65536 - encryptionSubkeys[i]) % 65536;
+      decryptionSubkeys[i + 1] = (65536 - encryptionSubkeys[i + 1]) % 65536;
+    }
+  
+    // Handle the final output transformation
+    decryptionSubkeys[48] = this.modInverse(encryptionSubkeys[48], 65536) || 0;
+    decryptionSubkeys[49] = (65536 - encryptionSubkeys[49]) % 65536;
+    decryptionSubkeys[50] = (65536 - encryptionSubkeys[50]) % 65536;
+    decryptionSubkeys[51] = this.modInverse(encryptionSubkeys[51], 65536) || 0;
+  
+    // Reverse the subkeys for decryption
+    return decryptionSubkeys.reverse();
+  }
+  
+
+ private Plus(a: number, b: number): number {
+  return (a + b) % 65536
+ }
+
+ private Multiply(a: number, b: number): number {
+  // Ensure 'a' is not 0; if it is, use 65536 (since 0 * b % 65536 will always be 0, which is not useful for encryption)
+  if (a === 0) a = 65536
+  if (b === 0) b = 65536
+  return (a * b) % 65537
+ }
+ private inverseMod2ToThe16(n: number): number | null {
+  if (typeof n !== 'number' || n < 0) {
+   throw new Error('n must be a non-negative number')
+  }
+
+  const modulo = 1 << 16
+  n = n % modulo // Ensure 'n' is within the modulus range
+
+  let t = 0
+  let newT = 1
+  let r = modulo
+  let newR = n
+
+  while (newR !== 0) {
+   const quotient = Math.floor(r / newR)
+
+   ;[t, newT] = [newT, t - quotient * newT]
+   ;[r, newR] = [newR, r - quotient * newR]
+  }
+
+  // No inverse exists if 'r' is greater than 1 (i.e., 'n' and 'modulo' are not coprime)
+  if (r > 1) return null // Indicate no inverse exists
+
+  // Adjust 't' to be positive
+  if (t < 0) t += modulo
+
+  return t
+ }
+
+ private algorithm(segments: number[], data: string) {
   let base = data.padEnd(8, 'X')
 
   const blocks: number[] = []
@@ -82,20 +182,27 @@ class IDEA implements iCypher {
   }
   for (let i = 0; i < 8; i++) {
    const index = 6 * i
+   const k1 = segments[index] === 0 ? 65536 : segments[index]
+   const k2 = segments[index + 1]
+   const k3 = segments[index + 2]
+   const k4 = segments[index + 3] === 0 ? 65536 : segments[index + 3]
+   const k5 = segments[index + 4] === 0 ? 65536 : segments[index + 4]
+   const k6 = segments[index + 5] === 0 ? 65536 : segments[index + 5]
+
    // layer 1
-   blocks[0] = blocks[0] * segments[index]
-   blocks[1] = blocks[1] + segments[index + 1]
-   blocks[2] = blocks[2] + segments[index + 2]
-   blocks[3] = blocks[3] * segments[index + 3]
+   blocks[0] = this.Multiply(blocks[0], k1)
+   blocks[3] = this.Multiply(blocks[3], k4)
+   blocks[1] = this.Plus(blocks[1], k2)
+   blocks[2] = this.Plus(blocks[2], k3)
    //layer 2
    const middle: number[] = []
    middle.push(blocks[0] ^ blocks[2])
    middle.push(blocks[1] ^ blocks[3])
    //layer 3
-   middle[0] = middle[0] * segments[index + 4]
-   middle[1] = middle[0] + middle[1]
-   middle[1] = middle[1] * segments[index + 5]
-   middle[0] = middle[0] + middle[1]
+   middle[0] = this.Multiply(middle[0], k5)
+   middle[0] = this.Plus(middle[0], middle[1])
+   middle[1] = this.Plus(middle[0], middle[1])
+   middle[1] = this.Multiply(middle[1], k6)
    //layer 4
    blocks[0] = blocks[0] ^ middle[1]
    blocks[1] = blocks[1] ^ middle[0]
@@ -109,10 +216,10 @@ class IDEA implements iCypher {
   }
 
   // layer 8.5
-  blocks[0] = blocks[0] * segments[6 * 7]
-  blocks[1] = blocks[1] + segments[6 * 7 + 1]
-  blocks[2] = blocks[2] + segments[6 * 7 + 2]
-  blocks[3] = blocks[3] * segments[6 * 7 + 3]
+  blocks[1] = this.Plus(blocks[1], segments[6 * 7 + 1])
+  blocks[2] = this.Plus(blocks[2], segments[6 * 7 + 2])
+  blocks[0] = this.Multiply(blocks[0], segments[6 * 7])
+  blocks[3] = this.Multiply(blocks[3], segments[6 * 7 + 3])
 
   let newBase = ''
   blocks.forEach((chars) => {
@@ -130,6 +237,8 @@ class IDEA implements iCypher {
   return newBase
  }
 
+  
+
  encode(key: string, data: string): string {
   // Define the size of each chunk in characters, assuming ASCII encoding (8 characters = 64 bits)
   const chunkSize = 8
@@ -142,26 +251,17 @@ class IDEA implements iCypher {
   }
 
   let encoded = ''
+  const segments = this.generateIDEASubkeys(key)
+
   chunks.forEach((chunk) => {
-   encoded += this.algorithm(key, chunk)
+   encoded += this.algorithm(segments, chunk)
   })
 
   const encodedString = btoa(encoded)
   return encodedString
  }
 
- decode(key: string, base64Data: string): string {
-  // Decode the Base64 input
-  const data = atob(base64Data)
-
-  // Placeholder for the decoded output
-  let decoded = ''
-
-  // Assuming 'generateIDEASubkeys' function generates an array of subkeys
-  const segments = this.generateIDEASubkeys(key)
-
-  // Placeholder: Process to divide 'data' into chunks corresponding to the encoding process
-  // This should match how the data was chunked and encoded in the encode function
+ decode(key: string, data: string): string {
   // Define the size of each chunk in characters, assuming ASCII encoding (8 characters = 64 bits)
   const chunkSize = 8
   // Initialize an array to hold the chunks
@@ -172,63 +272,17 @@ class IDEA implements iCypher {
    chunks.push(chunk)
   }
 
-  log(chunks)
+  let encoded = ''
+
+  const gen = this.generateIDEASubkeys(key)
+  const segments = this.generateDecryptionSubkeys(gen)
 
   chunks.forEach((chunk) => {
-   // Convert the chunk back to 16-bit blocks, similar to the initial step in the encryption process
-   const blocks: any[] = [] // Convert 'chunk' into 16-bit blocks
-
-   // Reverse the final layer 1 operations from the encryption
-   // layer 8.5
-   blocks[0] = blocks[0] / segments[6 * 7]
-   blocks[1] = blocks[1] - segments[6 * 7 + 1]
-   blocks[2] = blocks[2] - segments[6 * 7 + 2]
-   blocks[3] = blocks[3] / segments[6 * 7 + 3]
-   // Placeholder: Apply inverse operations (subtraction and multiplicative inverse) using the final round subkeys
-
-   // Reverse the rounds, ensuring to swap blocks back to their original positions before each round's inversion
-   for (let i = 7; i >= 0; i--) {
-    // Iterate rounds in reverse order
-    const index = 6 * i
-
-    // Placeholder: Invert layer 4 operations using XOR
-    const middle: number[] = []
-    middle.push(blocks[1] ^ blocks[3])
-    middle.push(blocks[0] ^ blocks[2])
-
-    // Placeholder: Invert layer 3 operations (considering the multiplicative inverse and subtraction)
-    middle[0] = middle[0] - middle[1]
-    middle[0] = middle[0] / segments[index + 4]
-    middle[1] = middle[0] - middle[1]
-    middle[1] = middle[1] / segments[index + 5]
-    // Placeholder: Invert layer 2 operations using XOR
-    blocks[0] = blocks[0] ^ middle[1]
-    blocks[1] = blocks[1] ^ middle[0]
-    blocks[2] = blocks[2] ^ middle[1]
-    blocks[3] = blocks[3] ^ middle[0]
-
-    // Placeholder: Invert layer 1 operations (subtraction and multiplicative inverse) using the subkeys for this round
-    blocks[0] = blocks[0] / segments[index]
-    blocks[1] = blocks[1] - segments[index + 1]
-    blocks[2] = blocks[2] - segments[index + 2]
-    blocks[3] = blocks[3] / segments[index + 3]
-    // Swap blocks back to their positions before this round's original swap
-    // swap
-    const tmp = blocks[1]
-    blocks[1] = blocks[2]
-    blocks[2] = tmp
-    log(blocks)
-   }
-
-   // Convert the blocks back into characters
-   blocks.forEach((block) => {
-    const char1 = String.fromCharCode((block >> 8) & 0xff)
-    const char2 = String.fromCharCode(block & 0xff)
-    decoded += char1 + char2
-   })
+   encoded += this.algorithm(segments, chunk)
   })
 
-  return decoded
+  //   const encodedString = atob(encoded)
+  return encoded
  }
 }
 
